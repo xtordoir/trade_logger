@@ -1,8 +1,7 @@
-
-// lib.rs - Complete logging solution with routing
-use log::{Log, Metadata, Record, Level, LevelFilter, SetLoggerError};
+//! Routes `log` records targeting `"trades"` to an HTTP reporting endpoint,
+//! and everything else to the console.
+use log::{Log, Metadata, Record, LevelFilter, SetLoggerError};
 use serde::{Serialize, Deserialize};
-use std::sync::Arc;
 use tokio::sync::mpsc;
 use env_logger::Builder as EnvBuilder;
 use std::io::Write;
@@ -110,18 +109,7 @@ impl RoutingLogger {
     }
 
     fn is_trade_log(&self, record: &Record) -> bool {
-        // Check if target starts with "trades"
-        if record.target().starts_with("trades") {
-            return true;
-        }
-
-        // Also check if message is valid TradeLog JSON
-        let message = format!("{}", record.args());
-        if let Ok(parsed) = serde_json::from_str::<TradeLog>(&message) {
-            return true;
-        }
-
-        false
+        record.target().starts_with("trades")
     }
 }
 
@@ -142,8 +130,11 @@ impl Log for RoutingLogger {
         if self.is_trade_log(record) {
             // Parse and send to HTTP
             let message = format!("{}", record.args());
-            if let Ok(trade) = serde_json::from_str::<TradeLog>(&message) {
-                let _ = self.http_sender.send(trade);
+            match serde_json::from_str::<TradeLog>(&message) {
+                Ok(trade) => {
+                    let _ = self.http_sender.send(trade);
+                }
+                Err(e) => eprintln!("trade_logger: dropping malformed trade log record: {}", e),
             }
         } else {
             // Send to console
@@ -188,8 +179,7 @@ pub fn log_trade(instrument: &str, units: f64, price: f64, agent_name: &str) {
         price,
         agent_name: agent_name.to_string(),
     };
-    println!("{}", serde_json::to_string(&trade).unwrap());
-    
+
     log::info!(
         target: "trades",
         "{}",
