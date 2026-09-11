@@ -156,15 +156,20 @@ impl Log for RoutingLogger {
     }
 }
 
+/// Re-exported so `log_trade!` callers don't need their own `serde_json`/`chrono`/`log` deps.
+pub use chrono;
+pub use log;
+pub use serde_json;
+
 /// Helper macro for logging trades
 #[macro_export]
 macro_rules! log_trade {
     ($instrument:expr, $units:expr, $price:expr, $agent:expr) => {
-        log::info!(
+        $crate::log::info!(
             target: "trades",
             "{}",
-            serde_json::json!({
-                "datetime": chrono::Utc::now().to_rfc3339(),
+            $crate::serde_json::json!({
+                "datetime": $crate::chrono::Utc::now().to_rfc3339(),
                 "instrument": $instrument,
                 "units": $units,
                 "price": $price,
