@@ -186,3 +186,115 @@ pub fn log_trade(instrument: &str, units: f64, price: f64, agent_name: &str) {
         serde_json::to_string(&trade).unwrap()
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use log::Level;
+    use wiremock::matchers::{body_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn sample_trade() -> TradeLog {
+        TradeLog {
+            datetime: "2026-09-09T12:00:00Z".to_string(),
+            instrument: "EUR_USD".to_string(),
+            units: 100.0,
+            price: 1.0850,
+            agent_name: "agent-1".to_string(),
+        }
+    }
+
+    fn test_logger() -> RoutingLogger {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        RoutingLogger {
+            console_logger: EnvBuilder::new().build(),
+            http_sender: tx,
+            http_level: LevelFilter::Info,
+        }
+    }
+
+    #[test]
+    fn trade_log_json_roundtrip() {
+        let trade = sample_trade();
+        let json = serde_json::to_string(&trade).unwrap();
+        let parsed: TradeLog = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.datetime, trade.datetime);
+        assert_eq!(parsed.instrument, trade.instrument);
+        assert_eq!(parsed.units, trade.units);
+        assert_eq!(parsed.price, trade.price);
+        assert_eq!(parsed.agent_name, trade.agent_name);
+    }
+
+    #[test]
+    fn logging_config_default_points_at_localhost() {
+        let config = LoggingConfig::default();
+        assert_eq!(config.http_endpoint, "http://localhost:8080/trade/");
+        assert_eq!(config.console_level, LevelFilter::Info);
+        assert_eq!(config.http_level, LevelFilter::Info);
+    }
+
+    #[test]
+    fn is_trade_log_true_for_trades_target() {
+        let logger = test_logger();
+        let record = Record::builder()
+            .target("trades")
+            .level(Level::Info)
+            .args(format_args!("{{}}"))
+            .build();
+        assert!(logger.is_trade_log(&record));
+    }
+
+    #[test]
+    fn is_trade_log_true_for_trades_subtarget() {
+        let logger = test_logger();
+        let record = Record::builder()
+            .target("trades::agent-1")
+            .level(Level::Info)
+            .args(format_args!("{{}}"))
+            .build();
+        assert!(logger.is_trade_log(&record));
+    }
+
+    #[test]
+    fn is_trade_log_does_not_content_sniff() {
+        // Routing must be decided by target alone - a message that happens to
+        // look like TradeLog JSON must not get rerouted off an unrelated target.
+        let logger = test_logger();
+        let record = Record::builder()
+            .target("some_other_module")
+            .level(Level::Info)
+            .args(format_args!("not routed by content"))
+            .build();
+        assert!(!logger.is_trade_log(&record));
+    }
+
+    #[tokio::test]
+    async fn http_sender_task_posts_trade_as_json() {
+        let server = MockServer::start().await;
+        let trade = sample_trade();
+
+        Mock::given(method("POST"))
+            .and(path("/trade/agent-1/"))
+            .and(body_json(serde_json::json!({
+                "datetime": trade.datetime,
+                "instrument": trade.instrument,
+                "units": trade.units,
+                "price": trade.price,
+                "agent_name": trade.agent_name,
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        tx.send(trade).unwrap();
+        drop(tx); // closes the channel so the task's loop returns once drained
+
+        let endpoint = format!("{}/trade/", server.uri());
+        RoutingLogger::http_sender_task(rx, endpoint).await;
+
+        // MockServer checks `.expect(1)` on drop; this makes the assertion explicit.
+        server.verify().await;
+    }
+}

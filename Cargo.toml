@@ -12,3 +12,7 @@ env_logger = "0.11"
 reqwest = { version = "0.13", features = ["json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros"] }
+wiremock = "0.6"
